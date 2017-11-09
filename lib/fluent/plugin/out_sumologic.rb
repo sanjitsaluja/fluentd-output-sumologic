@@ -179,53 +179,58 @@ class Fluent::Plugin::Sumologic < Fluent::Plugin::Output
 
   # This method is called every flush interval. Write the buffer chunk
   def write(chunk)
-    tag = chunk.metadata.tag
-    messages_list = {}
+    begin
+      tag = chunk.metadata.tag
+      messages_list = {}
 
-    # Sort messages
-    chunk.msgpack_each do |time, record|
-      # plugin dies randomly
-      # https://github.com/uken/fluent-plugin-elasticsearch/commit/8597b5d1faf34dd1f1523bfec45852d380b26601#diff-ae62a005780cc730c558e3e4f47cc544R94
-      next unless record.is_a? Hash
-      sumo_metadata = record.fetch('_sumo_metadata', { 'source' => record[@source_name_key] })
-      key           = sumo_key(sumo_metadata, record, tag)
-      log_format    = sumo_metadata['log_format'] || @log_format
+      # Sort messages
+      chunk.msgpack_each do |time, record|
+        # plugin dies randomly
+        # https://github.com/uken/fluent-plugin-elasticsearch/commit/8597b5d1faf34dd1f1523bfec45852d380b26601#diff-ae62a005780cc730c558e3e4f47cc544R94
+        next unless record.is_a? Hash
+        sumo_metadata = record.fetch('_sumo_metadata', { 'source' => record[@source_name_key] })
+        key           = sumo_key(sumo_metadata, record, tag)
+        log_format    = sumo_metadata['log_format'] || @log_format
 
-      # Strip any unwanted newlines
-      record[@log_key].chomp! if record[@log_key]
+        # Strip any unwanted newlines
+        record[@log_key].chomp! if record[@log_key]
 
-      case log_format
-        when 'text'
-          log = record[@log_key]
-          unless log.nil?
-            log.strip!
-          end
-        when 'json_merge'
-          log = dump_log(merge_json({ :timestamp => sumo_timestamp(time) }.merge(record)))
-        else
-          log = dump_log({ :timestamp => sumo_timestamp(time) }.merge(record))
-      end
-
-      unless log.nil?
-        if messages_list.key?(key)
-          messages_list[key].push(log)
-        else
-          messages_list[key] = [log]
+        case log_format
+          when 'text'
+            log = record[@log_key]
+            unless log.nil?
+              log.strip!
+            end
+          when 'json_merge'
+            log = dump_log(merge_json({ :timestamp => sumo_timestamp(time) }.merge(record)))
+          else
+            log = dump_log({ :timestamp => sumo_timestamp(time) }.merge(record))
         end
+
+        unless log.nil?
+          if messages_list.key?(key)
+            messages_list[key].push(log)
+          else
+            messages_list[key] = [log]
+          end
+        end
+
       end
 
+      # Push logs to sumo
+      messages_list.each do |key, messages|
+        source_name, source_category, source_host = key.split(':')
+        @sumo_conn.publish(
+            messages.join("\n"),
+            source_host    =source_host,
+            source_category=source_category,
+            source_name    =source_name
+        )
+      end
+    rescue => e
+      puts "-------------------------"
+      puts "#{e.class} #{e.message}"
+      puts "-------------------------"
     end
-
-    # Push logs to sumo
-    messages_list.each do |key, messages|
-      source_name, source_category, source_host = key.split(':')
-      @sumo_conn.publish(
-          messages.join("\n"),
-          source_host    =source_host,
-          source_category=source_category,
-          source_name    =source_name
-      )
-    end
-
   end
 end
